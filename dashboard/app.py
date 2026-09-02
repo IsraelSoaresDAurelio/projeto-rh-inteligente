@@ -18,8 +18,10 @@ from config.settings import (
     VAGAS_DIR,
 )
 from services.ingestao_curriculos import executar_ingestao
-from services.database import garantir_banco_atualizado, sincronizar_banco
+from services.database import garantir_banco_atualizado, listar_eventos_recentes, sincronizar_banco
+from integrations.llm import criar_cliente_llm
 from services.matching import executar_matching
+from services.operacoes_dashboard import criar_vaga_pelo_dashboard, salvar_curriculos_enviados
 
 CRITERIOS_SCORE = {
     "tecnologias": "Tecnologias",
@@ -82,7 +84,7 @@ def selecionar_secao(status_banco: dict[str, int]) -> str:
         st.caption(f"{status_banco['candidatos']} perfis · {status_banco['vagas']} vagas")
         secao = st.radio(
             "Menu de acompanhamento",
-            ["Visão executiva", "Acompanhamento de vagas"],
+            ["Visão executiva", "Acompanhamento de vagas", "Criar vagas", "Cadastrar candidatos"],
             key="secao_dashboard",
         )
         st.caption("Dados sensíveis permanecem no ambiente local.")
@@ -419,6 +421,186 @@ def renderizar_composicao_score(candidato: dict[str, Any]) -> None:
             st.progress(percentual / 100, text=f"{CRITERIOS_SCORE[chave]}  ·  {percentual:.0f}%")
 
 
+def separar_itens(texto: str) -> list[str]:
+    """Converte campos de formulário separados por linha ou vírgula em listas limpas."""
+    return [item.strip() for item in texto.replace("\n", ",").split(",") if item.strip()]
+
+
+def renderizar_historico_operacional() -> None:
+    """Exibe ações recentes sem mostrar o conteúdo de dados pessoais."""
+    st.subheader("Rastreabilidade recente")
+    eventos = listar_eventos_recentes()
+    if eventos:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Quando": evento["criado_em"].replace("T", " "),
+                        "Ação": evento["tipo"].replace("_", " ").capitalize(),
+                        "Referência": evento["referencia"],
+                    }
+                    for evento in eventos
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+            height=240,
+        )
+    else:
+        st.caption("Nenhuma ação registrada ainda.")
+
+
+def renderizar_cadastro_candidatos() -> None:
+    """Centraliza o recebimento local de currículos fora do painel executivo."""
+    st.title("Cadastrar candidatos")
+    st.write("Receba currículos e processe-os localmente para compor a base de talentos.")
+    with st.container(border=True):
+        st.subheader("Receber currículos")
+        st.caption("Os arquivos são processados no ambiente local. PDFs precisam conter texto selecionável.")
+        with st.form("enviar_curriculos", clear_on_submit=True):
+            arquivos = st.file_uploader(
+                "Currículos recebidos",
+                type=["pdf", "docx", "txt", "md", "json"],
+                accept_multiple_files=True,
+                max_upload_size=15,
+            )
+            enviar = st.form_submit_button(
+                "Enviar e processar currículos", icon=":material/upload_file:", width="stretch"
+            )
+        if enviar:
+            if not arquivos:
+                st.warning("Selecione ao menos um currículo para continuar.")
+            else:
+                salvos, avisos_upload = salvar_curriculos_enviados(arquivos)
+                gerados, avisos_ingestao = executar_ingestao()
+                sincronizar_banco()
+                carregar_json.clear()
+                carregar_perfis_candidatos.clear()
+                for aviso in [*avisos_upload, *avisos_ingestao]:
+                    st.warning(aviso)
+                if salvos:
+                    st.success(f"{len(salvos)} currículo(s) recebido(s) e {len(gerados)} arquivo(s) extraído(s).")
+                st.caption("Nenhum currículo é enviado à IA nesta etapa; revise os perfis antes de usá-los no ranking.")
+
+    with st.container(border=True):
+        renderizar_historico_operacional()
+
+
+def _preencher_formulario_vaga(rascunho: dict[str, Any]) -> None:
+    """Preenche o formulário manual com um rascunho que permanece editável."""
+    campos_lista = ["responsabilidades", "requisitos_obrigatorios", "desejaveis", "tecnologias", "idiomas"]
+    for campo, valor in rascunho.items():
+        chave = f"vaga_{campo}"
+        st.session_state[chave] = ", ".join(valor) if campo in campos_lista else valor
+
+
+def renderizar_criacao_vagas() -> None:
+    """Separa criação de vagas do painel, com apoio opcional e revisável de IA."""
+    st.title("Criar vagas")
+    st.write("Crie uma vaga manualmente ou gere um rascunho com IA para revisar antes de publicar.")
+    modo = st.segmented_control(
+        "Como começar", ["Assistida por IA", "Manual"], default="Assistida por IA", selection_mode="single"
+    )
+
+    if modo == "Assistida por IA":
+        with st.container(border=True):
+            st.subheader("Gerar rascunho com IA")
+            st.caption("A IA propõe o conteúdo; a publicação só acontece depois da sua revisão no formulário abaixo.")
+            provider_opcoes = {"Ollama (local)": "ollama", "OpenAI": "openai"}
+            provider_label = st.selectbox("Provedor", list(provider_opcoes), key="vaga_provider")
+            provider = provider_opcoes[provider_label]
+            modelo = st.text_input(
+                "Modelo", value=OLLAMA_MODEL if provider == "ollama" else OPENAI_MODEL, key=f"vaga_modelo_{provider}"
+            )
+            servidor = None
+            if provider == "ollama":
+                servidor = st.text_input("Servidor Ollama", value=OLLAMA_BASE_URL, key="vaga_servidor_ollama")
+            with st.form("gerar_rascunho_vaga", border=False):
+                necessidade = st.text_area(
+                    "Descreva a necessidade", placeholder="Ex.: Pessoa para analisar dados agrícolas e criar painéis para operações."
+                )
+                nivel_ia = st.segmented_control("Nível", ["junior", "pleno", "senior"], default="pleno")
+                gerar = st.form_submit_button("Gerar rascunho para revisão", icon=":material/auto_awesome:")
+            if gerar:
+                if not necessidade.strip():
+                    st.warning("Descreva a necessidade da vaga para gerar o rascunho.")
+                else:
+                    try:
+                        rascunho = criar_cliente_llm(provider, modelo, servidor).gerar_rascunho_vaga(necessidade, nivel_ia)
+                        _preencher_formulario_vaga(rascunho.model_dump())
+                        st.session_state["vaga_nivel"] = nivel_ia
+                        st.success("Rascunho gerado. Revise e ajuste os campos antes de criar a vaga.")
+                    except Exception as exc:
+                        st.error(f"Não foi possível gerar o rascunho: {exc}")
+
+    with st.container(border=True):
+        st.subheader("Revisar e criar vaga")
+        st.caption("Todos os campos abaixo são editáveis. O ranking será atualizado após a criação.")
+        with st.form("criar_vaga", clear_on_submit=False):
+            titulo = st.text_input("Título da vaga", placeholder="Ex.: Analista de dados", key="vaga_titulo")
+            descricao = st.text_area("Descrição", placeholder="Objetivo e escopo da oportunidade", key="vaga_descricao")
+            primeira_linha, segunda_linha = st.columns(2, gap="medium")
+            with primeira_linha:
+                area = st.text_input("Área", placeholder="Ex.: Dados", key="vaga_area")
+                nivel = st.selectbox("Nível", ["junior", "pleno", "senior"], format_func=str.title, key="vaga_nivel")
+                modalidade = st.selectbox(
+                    "Modalidade", ["remoto", "hibrido", "presencial"], format_func=str.title, key="vaga_modalidade"
+                )
+                localizacao = st.text_input("Localização", placeholder="Ex.: São Paulo, SP", key="vaga_localizacao")
+            with segunda_linha:
+                quantidade_posicoes = st.number_input("Posições disponíveis", min_value=1, value=1, step=1, key="vaga_quantidade_posicoes")
+                anos_experiencia = st.number_input("Experiência mínima (anos)", min_value=0, value=0, step=1, key="vaga_anos_minimos_experiencia")
+                formacao_minima = st.text_input("Formação mínima", placeholder="Ex.: Graduação em áreas correlatas", key="vaga_formacao_minima")
+                idiomas = st.text_input("Idiomas", placeholder="Ex.: Português fluente, Inglês intermediário", key="vaga_idiomas")
+            responsabilidades = st.text_area("Responsabilidades", placeholder="Uma responsabilidade por linha ou separada por vírgulas", key="vaga_responsabilidades")
+            requisitos = st.text_area("Requisitos obrigatórios", placeholder="Um requisito por linha ou separado por vírgulas", key="vaga_requisitos_obrigatorios")
+            tecnologias = st.text_area("Tecnologias", placeholder="Ex.: Python, SQL, Power BI", key="vaga_tecnologias")
+            desejaveis = st.text_area("Diferenciais desejáveis", placeholder="Opcional: um item por linha ou separado por vírgulas", key="vaga_desejaveis")
+            criar = st.form_submit_button(
+                "Criar vaga e atualizar ranking",
+                type="primary",
+                icon=":material/playlist_add_check:",
+                width="stretch",
+            )
+        if criar:
+            listas_obrigatorias = {
+                "Responsabilidades": separar_itens(responsabilidades),
+                "Requisitos obrigatórios": separar_itens(requisitos),
+                "Tecnologias": separar_itens(tecnologias),
+            }
+            campos_obrigatorios = [titulo, descricao, area, localizacao, formacao_minima, idiomas]
+            if not all(campo.strip() for campo in campos_obrigatorios) or not all(listas_obrigatorias.values()):
+                st.error("Preencha todos os campos obrigatórios e informe ao menos um item em cada lista requerida.")
+            else:
+                vaga, _ = criar_vaga_pelo_dashboard(
+                    {
+                        "titulo": titulo.strip(),
+                        "area": area.strip(),
+                        "nivel": nivel,
+                        "descricao": descricao.strip(),
+                        "responsabilidades": listas_obrigatorias["Responsabilidades"],
+                        "requisitos_obrigatorios": listas_obrigatorias["Requisitos obrigatórios"],
+                        "desejaveis": separar_itens(desejaveis),
+                        "tecnologias": listas_obrigatorias["Tecnologias"],
+                        "formacao_minima": formacao_minima.strip(),
+                        "anos_minimos_experiencia": int(anos_experiencia),
+                        "idiomas": separar_itens(idiomas),
+                        "modalidade": modalidade,
+                        "localizacao": localizacao.strip(),
+                        "quantidade_posicoes": int(quantidade_posicoes),
+                    }
+                )
+                resumo = executar_matching(top=30)
+                sincronizar_banco()
+                carregar_json.clear()
+                carregar_perfis_candidatos.clear()
+                st.success(
+                    f"{vaga.id} criada e ranking atualizado para {resumo['vagas_processadas']} vaga(s)."
+                )
+                st.session_state["secao_dashboard"] = "Acompanhamento de vagas"
+                st.rerun()
+
+
 def renderizar_acoes(vaga_id: str) -> None:
     acoes, ia = st.columns(2, gap="medium")
     with acoes:
@@ -655,15 +837,22 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
+    status_banco = garantir_banco_atualizado()
+    secao = selecionar_secao(status_banco)
+    if secao == "Criar vagas":
+        renderizar_criacao_vagas()
+        return
+    if secao == "Cadastrar candidatos":
+        renderizar_cadastro_candidatos()
+        return
+
     arquivos = arquivos_resultado()
     if not arquivos:
-        st.error("Nenhum ranking encontrado.")
+        st.info("Nenhum ranking encontrado ainda. Envie currículos e crie uma vaga acima, ou gere um ranking pelo terminal.")
         st.code("python -m services.matching --top 30", language="powershell")
         return
 
     catalogo = catalogo_vagas(arquivos)
-    status_banco = garantir_banco_atualizado()
-    secao = selecionar_secao(status_banco)
     if secao == "Visão executiva":
         renderizar_visao_executiva(catalogo, status_banco)
         return

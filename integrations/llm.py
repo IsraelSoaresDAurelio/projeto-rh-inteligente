@@ -15,6 +15,8 @@ from config.settings import (
     OPENAI_MODEL,
 )
 from models.analise import ParecerCandidato
+from models.rascunho_vaga import RascunhoVaga
+from prompts.gerar_vaga import INSTRUCOES_GERAR_VAGA, montar_prompt_gerar_vaga
 from prompts.parecer_recrutamento import INSTRUCOES, montar_prompt
 
 
@@ -60,6 +62,36 @@ class ClienteLLM:
         except (json.JSONDecodeError, ValueError) as exc:
             raise ConfiguracaoLLMError("A OpenAI não retornou um parecer no formato esperado.") from exc
 
+    def gerar_rascunho_vaga(self, necessidade: str, nivel: str) -> RascunhoVaga:
+        """Gera um rascunho estruturado, sempre sujeito à revisão humana."""
+        if not self.api_key:
+            raise ConfiguracaoLLMError(
+                "OPENAI_API_KEY não configurada. Crie um arquivo .env com OPENAI_API_KEY=..."
+            )
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ConfiguracaoLLMError("Instale as dependências com: pip install -r requirements.txt") from exc
+
+        response = OpenAI(api_key=self.api_key).responses.create(
+            model=self.model,
+            instructions=INSTRUCOES_GERAR_VAGA,
+            input=montar_prompt_gerar_vaga(necessidade, nivel),
+            store=False,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "rascunho_vaga",
+                    "strict": True,
+                    "schema": RascunhoVaga.model_json_schema(),
+                }
+            },
+        )
+        try:
+            return RascunhoVaga.model_validate_json(response.output_text)
+        except ValueError as exc:
+            raise ConfiguracaoLLMError("A OpenAI não retornou uma vaga no formato esperado.") from exc
+
 
 class ClienteOllama:
     """Cliente para um Ollama em execução local, sem chave de API."""
@@ -104,6 +136,36 @@ class ClienteOllama:
             ) from exc
         except (KeyError, json.JSONDecodeError, ValueError) as exc:
             raise ConfiguracaoLLMError("O Ollama não retornou um parecer no formato esperado.") from exc
+
+    def gerar_rascunho_vaga(self, necessidade: str, nivel: str) -> RascunhoVaga:
+        """Gera um rascunho via modelo local, sem enviar dados ao exterior."""
+        schema = RascunhoVaga.model_json_schema()
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": INSTRUCOES_GERAR_VAGA},
+                {"role": "user", "content": montar_prompt_gerar_vaga(necessidade, nivel)},
+            ],
+            "stream": False,
+            "format": schema,
+            "options": {"temperature": 0.2, "num_ctx": OLLAMA_NUM_CTX},
+        }
+        request = Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=180) as response:
+                conteudo = json.loads(response.read().decode("utf-8"))["message"]["content"]
+            return RascunhoVaga.model_validate_json(conteudo)
+        except URLError as exc:
+            raise ConfiguracaoLLMError(
+                "Não foi possível conectar ao Ollama. Inicie o serviço e confirme a configuração."
+            ) from exc
+        except (KeyError, json.JSONDecodeError, ValueError) as exc:
+            raise ConfiguracaoLLMError("O Ollama não retornou uma vaga no formato esperado.") from exc
 
 
 def criar_cliente_llm(

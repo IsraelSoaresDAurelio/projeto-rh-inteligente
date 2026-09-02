@@ -57,6 +57,14 @@ def inicializar_banco() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_rankings_vaga_posicao
             ON rankings(vaga_id, posicao);
+
+            CREATE TABLE IF NOT EXISTS eventos_auditoria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tipo TEXT NOT NULL,
+                referencia TEXT NOT NULL,
+                detalhes_json TEXT NOT NULL,
+                criado_em TEXT NOT NULL
+            );
             """
         )
 
@@ -161,6 +169,48 @@ def garantir_banco_atualizado() -> dict[str, int]:
             "vagas": conexao.execute("SELECT COUNT(*) FROM vagas").fetchone()[0],
             "rankings": conexao.execute("SELECT COUNT(*) FROM rankings").fetchone()[0],
         }
+
+
+def registrar_evento_auditoria(tipo: str, referencia: str, detalhes: dict | None = None) -> None:
+    """Registra ações operacionais sem gravar conteúdo sensível no histórico."""
+    inicializar_banco()
+    with _conectar() as conexao:
+        conexao.execute(
+            """
+            INSERT INTO eventos_auditoria (tipo, referencia, detalhes_json, criado_em)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                tipo,
+                referencia,
+                json.dumps(detalhes or {}, ensure_ascii=False),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+
+
+def listar_eventos_recentes(limite: int = 8) -> list[dict]:
+    """Retorna o histórico operacional mais recente para o dashboard."""
+    inicializar_banco()
+    with _conectar() as conexao:
+        registros = conexao.execute(
+            """
+            SELECT tipo, referencia, detalhes_json, criado_em
+            FROM eventos_auditoria
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limite,),
+        ).fetchall()
+    return [
+        {
+            "tipo": registro["tipo"],
+            "referencia": registro["referencia"],
+            "detalhes": json.loads(registro["detalhes_json"]),
+            "criado_em": registro["criado_em"],
+        }
+        for registro in registros
+    ]
 
 
 if __name__ == "__main__":
