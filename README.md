@@ -43,7 +43,7 @@ O ranking é calculado antes da IA e continua disponível sem chave de API. A IA
 
 ## Tecnologias
 
-Python 3.11+, Pydantic, Pandas, OpenAI API, Streamlit e Pytest.
+Python 3.11+, Pydantic, Pandas, OpenAI API, Streamlit, Pytest e Ollama API (local).
 
 ## Banco de dados local
 
