@@ -13,21 +13,33 @@ Triar muitos currículos exige tempo e pode tornar a comparação inconsistente.
 - Geração de **300 currículos sintéticos** e **10 vagas fictícias** para demonstração.
 - Ranking por critérios explícitos: tecnologias, requisitos, experiência, área, formação, idiomas e diferenciais desejáveis.
 - Explicação do score, competências evidenciadas e lacunas a validar.
-- Parecer opcional via OpenAI: resumo, pontos fortes, perguntas de entrevista, potencial e recomendação.
-- Dashboard Streamlit para consultar vagas, ranking e pareceres.
+- Dashboard Streamlit com áreas separadas para acompanhamento, criação de vagas e cadastro de candidatos.
+- Criação manual de vagas ou geração de rascunho com IA (Ollama local ou OpenAI), sempre com revisão humana antes da publicação.
+- Recebimento local de currículos, com hash do arquivo e histórico de ações para rastreabilidade.
 
 ## Como funciona
 
 ```mermaid
-flowchart LR
-    A[Currículos e vagas] --> B[Motor de scoring auditável]
-    B --> C[Ranking e lacunas]
-    C --> D[Parecer de IA opcional]
-    C --> E[Dashboard de RH]
-    D --> E
+flowchart TB
+    subgraph Cadastro[Cadastro e preparação]
+        V[RH cria vaga<br/>manual ou assistida por IA] --> R[Revisão humana<br/>dos requisitos]
+        C[RH envia currículos] --> I[Ingestão local<br/>texto, hash e metadados]
+    end
+
+    R --> B[(Base local SQLite)]
+    I --> B
+    B --> M[Motor de matching<br/>critérios auditáveis]
+    M --> K[Ranking, score<br/>e lacunas]
+
+    K --> D[Dashboard de RH]
+    K -. opcional .-> P[Parecer de IA<br/>para entrevista]
+    P --> D
+    D --> H{Decisão humana}
+    H -->|Avançar| E[Entrevista e processo seletivo]
+    H -->|Revisar| R
 ```
 
-O ranking é calculado antes da IA e continua disponível sem chave de API. A IA apenas enriquece a leitura do resultado; ela não altera a posição ou a nota do candidato.
+O ranking é calculado antes da IA e continua disponível sem chave de API. A IA pode ajudar a redigir um rascunho de vaga ou enriquecer a leitura do resultado, mas não altera a posição ou a nota de candidatos. A criação da vaga e qualquer decisão sobre pessoas permanecem sob responsabilidade humana.
 
 ## Tecnologias
 
@@ -99,15 +111,23 @@ Nenhum contato ou localização do candidato é enviado à IA. Os arquivos `.env
 streamlit run dashboard/app.py
 ```
 
-No próprio dashboard, o botão **Processar currículos e atualizar ranking** executa a ingestão local da pasta `curriculos/` e atualiza os rankings. O botão de pareceres de IA é separado e exige uma chave da OpenAI configurada no `.env`.
+Use a barra lateral para acessar as tarefas:
+
+- **Visão executiva**: indicadores e prioridades do portfólio de vagas.
+- **Acompanhamento de vagas**: ranking, detalhes de candidatos e pareceres opcionais.
+- **Criar vagas**: criação manual ou rascunho assistido por IA. Revise todos os campos antes de criar a vaga e atualizar o ranking.
+- **Cadastrar candidatos**: envio e processamento local de currículos, além do histórico de rastreabilidade.
+
+Para criar um rascunho com IA, selecione o provedor configurado. Ollama mantém a geração no computador local; OpenAI requer `OPENAI_API_KEY` no arquivo `.env` e pode gerar custos conforme o uso. Não envie dados pessoais de candidatos na descrição da vaga.
 
 ## Roteiro de apresentação (5 minutos)
 
-1. Abra o dashboard e selecione uma vaga.
-2. Mostre que o ranking compara os mesmos critérios para todos os candidatos.
-3. Abra um candidato e apresente o detalhamento da nota e as lacunas.
-4. Se houver parecer gerado, mostre as perguntas sugeridas para entrevista.
-5. Reforce que a decisão final é humana e que a IA não substitui a avaliação profissional.
+1. Abra **Visão executiva** e apresente os processos ativos e prioridades.
+2. Acesse **Criar vagas** e mostre o rascunho assistido por IA, reforçando a revisão humana.
+3. Em **Cadastrar candidatos**, mostre que o arquivo permanece local e gera rastreabilidade.
+4. Em **Acompanhamento de vagas**, apresente o score, as evidências e as lacunas de um candidato.
+5. Se houver parecer gerado, mostre as perguntas sugeridas para entrevista.
+6. Reforce que a decisão final é humana e que a IA não substitui a avaliação profissional.
 
 ## Estrutura do projeto
 
@@ -115,9 +135,9 @@ No próprio dashboard, o botão **Processar currículos e atualizar ranking** ex
 app.py                 Ponto de entrada do motor de matching
 models/                Contratos de candidatos, vagas, resultados e pareceres
 generators/            Dados sintéticos para demonstração
-services/              Scoring, matching, carregamento e análise
-integrations/          Cliente da OpenAI
-prompts/               Instruções para geração do parecer
+services/              Scoring, matching, ingestão, persistência e operações do dashboard
+integrations/          Clientes para OpenAI e Ollama
+prompts/               Instruções para pareceres e rascunhos de vagas
 dashboard/             Interface Streamlit
 data/                  Dados de entrada e resultados locais
 tests/                 Testes automatizados
@@ -133,8 +153,8 @@ docs/                  Documentação técnica e roteiro do dashboard
 
 ## Próximas evoluções
 
-1. Upload de currículos e criação de vagas pelo dashboard.
-2. Filtros, busca e comparação lado a lado.
+1. Filtros, busca e comparação lado a lado de candidatos.
+2. Edição, arquivamento e status de vagas.
 3. Autenticação e perfis de acesso.
 4. Avaliação de qualidade do ranking e monitoramento de vieses.
 5. Integração com ATS, mediante requisitos de segurança e privacidade.
