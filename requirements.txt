@@ -1,0 +1,25 @@
+# Core
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+email-validator>=2.0.0
+
+# Inteligência Artificial
+openai>=1.0.0
+
+# Dados e utilitários
+pandas>=2.0.0
+pyyaml>=6.0.0
+pypdf>=5.0.0
+python-docx>=1.1.0
+reportlab>=4.0.0
+
+# Dashboard (próximas etapas)
+streamlit>=1.30.0
+
+# Testes
+pytest>=8.0.0
+pytest-cov>=4.0.0
+
+# Qualidade de código (opcional)
+ruff>=0.4.0
